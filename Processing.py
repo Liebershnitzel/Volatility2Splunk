@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/venv/volatility3/bin/python3
 import os
 import subprocess
 import sys
@@ -16,8 +16,6 @@ if 'LD_LIBRARY_PATH' in os.environ:
 
 SPLUNK_HEC_URL = 'http://localhost:8088/services/collector/event'
 SPLUNK_HEC_TOKEN = '49716b73-cbe5-4e50-a488-86bafeb3e548'
-path_to_volatility = '/opt/tools/volatility/vol.py'
-output_folder = '/opt/splunk/memory'
 
 logging.basicConfig(filename='/opt/splunk/var/log/splunk/volatility2dump_errors.log', level=logging.ERROR, format='%(asctime)s:%(levelname)s:%(message)s')
 
@@ -26,6 +24,8 @@ def run_volatility_plugin(dump_file,profile, plugin, output_folder, memory_dump_
     plugin_args = plugin.split()
     plugin_name = plugin_args[0]
 
+
+    path_to_volatility = '/opt/tools/volatility/vol.py'
     command = [
         'python2.7',  # Ensuring we still call Python 2 for Volatility 2
         path_to_volatility,
@@ -54,7 +54,6 @@ def run_volatility_plugin(dump_file,profile, plugin, output_folder, memory_dump_
                 file.write(json.dumps(item) + '\n')
 
         # Upload the JSON file directly to Splunk
-        print("Uploading to Splunk")
         upload_to_splunk(output_file_path)
 
     except subprocess.CalledProcessError as e:
@@ -79,7 +78,6 @@ def upload_to_splunk(file_path):
             "sourcetype": "_json_no_timestamp",\
             "index": "memory"
         }
-        print(payload)
         response = requests.post(SPLUNK_HEC_URL, headers=headers, json=payload, verify=False)
 
     if response.status_code != 200:
@@ -89,7 +87,7 @@ def upload_to_splunk(file_path):
 def process_memory_dump(dump_file, profile, os_type):
     """Process memory dump using a set of Volatility plugins."""
     memory_dump_name = os.path.splitext(os.path.basename(dump_file))[0]
-    output_folder = os.path.join(output_folder, memory_dump_name)
+    output_folder = os.path.join('/opt/splunk/memory/', memory_dump_name)
     objects_folder = os.path.join(output_folder, 'objects')
     os.makedirs(output_folder, exist_ok=True)
     os.makedirs(objects_folder, exist_ok=True)
@@ -109,47 +107,48 @@ def process_memory_dump(dump_file, profile, os_type):
         "miscellaneous": ['imageinfo', 'kdbgscan', 'kpcrscan', 'messagehooks', 'bioskbd', 'auditpol', 'patcher', 'pagecheck', 'timeliner', 'clipboard', 'editbox', 'deskscan', 'eventhooks', 'gahti', 'gditimers']
     }
 
-    # Handling the "windows" os_type by running all plugins across all categories
-    if os_type.lower() == "windows":
-        for category, plugins in categories.items():
-            for plugin in plugins:
-                print("Running", plugin)
-                try:
-                    run_volatility_plugin(dump_file, profile, plugin, output_folder, memory_dump_name, category)
-                except Exception as e:
-                    logging.error(f"{str(e)}")
-                    print(f"Failed to process plugin {plugin}")
-
-    else:
-        # Handle comma-delimited plugin names or single plugin
-        requested_plugins = os_type.split(',')
-
-        for plugin in requested_plugins:
-            plugin = plugin.strip()  # Remove any leading or trailing whitespace
-            matched_category = None
-
-            for category, plugin_list in categories.items():
-                if plugin in plugin_list or any(plugin.startswith(p) for p in plugin_list):
-                    matched_category = category
-                    break
-
-            # If a matching category is found, use it; otherwise, use the provided os_type as the category
-            category_name = matched_category if matched_category else "custom"
-            print("Running", plugin)
-            try:
-                run_volatility_plugin(dump_file, profile, plugin, output_folder, memory_dump_name, category_name)
-            except Exception as e:
-                logging.error(f"{str(e)}")
-                print(f"Failed to process plugin {plugin}")
-
-
-def main():
-    lock_file_path = '/tmp/dumpprocess.lock'
-
-    with open(lock_file_path, 'w') as lock_file:
+    def run_plugin(plugin, category_name):
+        """Helper function to run a plugin with the specified category name."""
+        print(f"Running {plugin} from category {category_name}")
         try:
-            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            run_volatility_plugin(dump_file, profile, plugin, output_folder, memory_dump_name, category_name)
+        except Exception as e:
+            logging.error(f"Error processing plugin {plugin} in category {category_name}: {str(e)}")
+            print(f"Failed to process plugin {plugin} in category {category_name}")
 
+    if os_type.lower() == "windows":
+        for category_name, category_plugins in categories.items():
+            for plugin in category_plugins:
+                run_plugin(plugin, category_name)
+    else:
+        matched_plugins = []
+        for category_name, category_plugins in categories.items():
+            for plugin in category_plugins:
+                if os_type.lower() == category_name:
+                    run_plugin(plugin, category_name)
+                    matched_plugins.extend(category_plugins)
+                elif plugin in os_type.split(','):
+                    matched_plugins.append((plugin, category_name))
+
+        if not matched_plugins:
+            # Custom category if no matches found in predefined categories
+            custom_plugins = os_type.split(',')
+            for plugin in custom_plugins:
+                run_plugin(plugin.strip(), "custom")
+        else:
+            for plugin, category_name in matched_plugins:
+                run_plugin(plugin, category_name)
+ 
+def main():
+    lock_file_path = '/tmp/dumpprocess2.lock'
+
+    try:
+        with open(lock_file_path, 'w') as lock_file:
+            # Acquire the lock
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            print(f"Lock acquired on {lock_file_path}")
+
+            # Ensure proper command-line arguments
             if len(sys.argv) != 4:
                 print("Usage: dumpprocess.py <dump> <profile> <os_type>")
                 sys.exit(1)
@@ -157,14 +156,25 @@ def main():
             profile = sys.argv[2]
             dump_file = sys.argv[1]
             os_type = sys.argv[3]
+
+            # Call the function that processes the memory dump
             process_memory_dump(dump_file, profile, os_type)
 
-        except IOError:
-            print(f"{str(IOError)}")
-            sys.exit(1)
-        except Exception as e:
-            logging.error(f"An error occurred: {str(e)}")
+            print("Finished process_memory_dump")
+
+        # The lock is automatically released when the with block exits
+
+    except IOError:
+        print(f"Could not acquire lock on {lock_file_path}. Another instance might be running.")
+        sys.exit(1)
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        sys.exit(1)
+    finally:
+        # Ensure the lock file is deleted
+        if os.path.exists(lock_file_path):
+            os.remove(lock_file_path)
+            print(f"Lock file {lock_file_path} deleted.")
 
 if __name__ == "__main__":
     main()
-
