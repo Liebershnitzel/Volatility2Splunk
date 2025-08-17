@@ -1,0 +1,12 @@
+<dashboard version="1.1" script="volatility-ui/process.js">
+	<label>Volatility Processing</label>
+	<description>Submit memory dumps for processing and track background jobs.</description>
+	<row>
+		<panel>
+			<title>Process Memory Dump</title>
+			<html>
+				<div id="vol-process-root"></div>
+			</html>
+		</panel>
+	</row>
+</dashboard> 
